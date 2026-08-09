@@ -1,313 +1,151 @@
-<!DOCTYPE html>
-<html lang="id">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sistem Absen QR Code</title>
-    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <script src="https://unpkg.com/html5-qrcode"></script>
-    
-    <style>
-        :root {
-            --bg-color: #0b0f19;
-            --card-bg: rgba(19, 27, 46, 0.8);
-            --accent-blue: #3b82f6;
-            --accent-purple: #8b5cf6;
-            --text-main: #f8fafc;
-            --text-muted: #94a3b8;
-            --border-color: rgba(139, 92, 246, 0.25);
+from datetime import datetime, timedelta, timezone
+import os
+import threading
+import time
+from flask import Flask, jsonify, render_template, request
+import requests
+
+app = Flask(__name__)
+
+
+# --- PEMERIKSA STATUS SAKELAR VERCEL ---
+@app.before_request
+def check_status():
+    if os.environ.get('WEB_ACTIVE', 'TRUE').upper() != 'TRUE':
+        return (
+            """
+            <div style="text-align:center; padding:50px; font-family:sans-serif;">
+                <h1 style="color:red;">Akses Ditangguhkan ⚠️</h1>
+                <p>Masa aktif aplikasi telah berakhir / menunggu konfirmasi pembayaran.</p>
+                <p>Silakan hubungi Admin/Developer untuk mengaktifkan kembali.</p>
+            </div>
+            """,
+            403,
+        )
+
+
+# ---------------------------------------
+
+GOOGLE_SHEET_URL = 'https://script.google.com/macros/s/AKfycbyn88ANfRmR2M5knaX88Fkd_ALbp8jE1w6giz1Vsme8tuiQ8Zm-DtYgVBqU0wWRhKsc/exec'
+
+# Storage RAM: Key -> timestamp_terakhir_scan
+sudah_absen = {}
+lock = threading.Lock()
+
+WIB = timezone(timedelta(hours=7))
+
+
+@app.route('/')
+def home():
+    return render_template('index.html')
+
+
+@app.route('/get_riwayat', methods=['GET'])
+def get_riwayat():
+    try:
+        # Timeout diperpanjang jadi 10 detik untuk menghindari kegagalan saat Apps Script cold start
+        response = requests.get(GOOGLE_SHEET_URL, timeout=10)
+        return jsonify(response.json())
+    except Exception:
+        return jsonify([])
+
+
+@app.route('/proses_absen', methods=['POST'])
+def proses_absen():
+    sekarang = datetime.now(WIB)
+    tanggal = sekarang.strftime('%Y-%m-%d')
+    waktu = sekarang.strftime('%H:%M')
+
+    batas_waktu = sekarang.replace(
+        hour=23, minute=59, second=59, microsecond=0
+    )
+
+    if sekarang > batas_waktu:
+        return jsonify({
+            'status': 'ditutup',
+            'message': f'❌ Absen ditutup! Sekarang jam {waktu}.',
+        })
+
+    data = request.json.get('qr_data', '')
+    data_split = data.split('|')
+
+    if len(data_split) == 4:
+        id_user, nama, kelas, role = data_split
+        kunci_absen_hari_ini = f'{tanggal}|{id_user}'
+        waktu_sekarang = time.time()
+
+        with lock:
+            # 1. JIKA SUDAH PERNAH DI-SCAN HARI INI
+            if kunci_absen_hari_ini in sudah_absen:
+                waktu_scan_terakhir = sudah_absen[kunci_absen_hari_ini]
+                selisih_detik = waktu_sekarang - waktu_scan_terakhir
+
+                # A. Scan susulan dalam < 15 detik -> Tolak instan di RAM
+                if selisih_detik < 15:
+                    return jsonify({
+                        'status': 'warning',
+                        'message': f'⚠️ {nama} sudah absen hari ini!',
+                    })
+
+                # B. Jika > 15 detik -> Pastikan lagi dengan mengecek Google Sheet
+                masih_ada_di_sheet = False
+                try:
+                    res = requests.get(GOOGLE_SHEET_URL, timeout=8)
+                    if res.status_code == 200:
+                        riwayat = res.json()
+                        masih_ada_di_sheet = any(
+                            str(item.get('id')) == str(id_user)
+                            and str(item.get('tanggal')) == tanggal
+                            for item in riwayat
+                            if isinstance(item, dict)
+                        )
+                except Exception:
+                    masih_ada_di_sheet = True
+
+                if masih_ada_di_sheet:
+                    sudah_absen[kunci_absen_hari_ini] = waktu_sekarang
+                    return jsonify({
+                        'status': 'warning',
+                        'message': f'⚠️ {nama} sudah absen hari ini!',
+                    })
+                else:
+                    # Jika dihapus manual dari Sheet -> lepas kunci
+                    del sudah_absen[kunci_absen_hari_ini]
+
+            # 2. CATAT KE RAM DULU SEBAGAI KUNCI
+            sudah_absen[kunci_absen_hari_ini] = waktu_sekarang
+
+        payload = {
+            'id': id_user,
+            'nama': nama,
+            'kelas': kelas,
+            'role': role,
+            'tanggal': tanggal,
+            'waktu': waktu,
         }
 
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-            font-family: 'Poppins', sans-serif;
-        }
-
-        body {
-            background-color: var(--bg-color);
-            color: var(--text-main);
-            min-height: 100vh;
-            padding: 2rem 1rem;
-            background-image: 
-                radial-gradient(circle at 10% 20%, rgba(59, 130, 246, 0.12) 0%, transparent 40%),
-                radial-gradient(circle at 90% 80%, rgba(139, 92, 246, 0.12) 0%, transparent 40%);
-        }
-
-        .header {
-            text-align: center;
-            margin-bottom: 2rem;
-        }
-
-        .header h1 {
-            font-size: 2.2rem;
-            font-weight: 700;
-            background: linear-gradient(135deg, #60a5fa, #c084fc);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            margin-bottom: 0.3rem;
-        }
-
-        .header p {
-            color: var(--text-muted);
-            font-size: 0.95rem;
-        }
-
-        .container {
-            display: flex;
-            flex-direction: row;
-            gap: 1.5rem;
-            max-width: 1100px;
-            margin: 0 auto;
-            align-items: flex-start;
-        }
-
-        .panel {
-            background: var(--card-bg);
-            border: 1px solid var(--border-color);
-            backdrop-filter: blur(10px);
-            border-radius: 16px;
-            padding: 1.5rem;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-        }
-
-        .left-panel {
-            flex: 1;
-            min-width: 320px;
-        }
-
-        .left-panel h3 {
-            font-size: 1.2rem;
-            font-weight: 600;
-            margin-bottom: 1rem;
-            color: #c084fc;
-            border-bottom: 1px solid var(--border-color);
-            padding-bottom: 0.5rem;
-        }
-
-        #daftar_absen {
-            list-style: none;
-            max-height: 420px;
-            overflow-y: auto;
-            padding-right: 5px;
-        }
-
-        #daftar_absen::-webkit-scrollbar {
-            width: 5px;
-        }
-        #daftar_absen::-webkit-scrollbar-thumb {
-            background: var(--accent-purple);
-            border-radius: 4px;
-        }
-
-        #daftar_absen li {
-            background: rgba(15, 23, 42, 0.7);
-            border: 1px solid rgba(255, 255, 255, 0.05);
-            border-left: 4px solid var(--accent-purple);
-            padding: 0.8rem 1rem;
-            margin-bottom: 0.6rem;
-            border-radius: 8px;
-            font-size: 0.88rem;
-            transition: all 0.2s ease;
-        }
-
-        #daftar_absen li:hover {
-            transform: translateX(4px);
-            border-left-color: var(--accent-blue);
-            background: rgba(30, 41, 59, 0.8);
-        }
-
-        .right-panel {
-            flex: 1.2;
-            min-width: 320px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-        }
-
-        .right-panel h3 {
-            font-size: 1.2rem;
-            font-weight: 600;
-            margin-bottom: 1rem;
-            color: #60a5fa;
-            width: 100%;
-            border-bottom: 1px solid var(--border-color);
-            padding-bottom: 0.5rem;
-        }
-
-        #reader {
-            width: 100%;
-            border-radius: 12px;
-            overflow: hidden;
-            border: 2px dashed var(--border-color) !important;
-            background: #090d16;
-        }
-
-        #reader button {
-            background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
-            color: #fff;
-            border: none;
-            padding: 0.6rem 1.2rem;
-            border-radius: 8px;
-            font-weight: 600;
-            cursor: pointer;
-            margin: 10px 0;
-            transition: opacity 0.2s;
-        }
-
-        #reader button:hover {
-            opacity: 0.9;
-        }
-
-        #pesan_hasil {
-            margin-top: 1rem;
-            font-size: 0.95rem;
-            font-weight: 500;
-            text-align: center;
-            min-height: 2.8rem;
-            padding: 0.6rem 1rem;
-            border-radius: 8px;
-            background: rgba(15, 23, 42, 0.8);
-            border: 1px solid var(--border-color);
-            width: 100%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        @media (max-width: 768px) {
-            .container {
-                flex-direction: column;
-            }
-            .left-panel, .right-panel {
-                width: 100%;
-            }
-        }
-    </style>
-</head>
-<body>
-
-    <div class="header">
-        <h1>Absensi Siswa Kelas-12</h1>
-        <p>Arahkan QR Code ke kamera.</p>
-    </div>
-
-    <div class="container">
-        <div class="panel left-panel">
-            <h3>Daftar Hadir Hari Ini</h3>
-            <ul id="daftar_absen"></ul>
-        </div>
-
-        <div class="panel right-panel">
-            <h3>Scanner QR Code</h3>
-            <div id="reader"></div>
-            <div id="pesan_hasil">Menunggu scan...</div>
-        </div>
-    </div>
-
-    <script>
-        let isProcessing = false;
-
-        function muatDaftarHadir() {
-            fetch('/get_riwayat')
-                .then(response => response.json())
-                .then(data => {
-                    let listAbsen = document.getElementById('daftar_absen');
-                    listAbsen.innerHTML = '';
-                    
-                    if (Array.isArray(data)) {
-                        data.reverse().forEach(siswa => {
-                            let item = document.createElement('li');
-                            item.innerText = `[${siswa.waktu || ''}] ${siswa.nama || ''} - Kelas ${siswa.kelas || ''} (${siswa.role || ''})`;
-                            listAbsen.appendChild(item);
-                        });
-                    }
-                })
-                .catch(err => console.error("Gagal muat data:", err));
-        }
-
-        document.addEventListener('DOMContentLoaded', muatDaftarHadir);
-
-        function bicara(text) {
-            if ('speechSynthesis' in window) {
-                window.speechSynthesis.cancel();
-                let suara = new SpeechSynthesisUtterance(text);
-                suara.lang = 'id-ID';
-                suara.rate = 1.0;
-                window.speechSynthesis.speak(suara);
-            }
-        }
-
-        function onScanSuccess(decodedText, decodedResult) {
-            if (isProcessing) return;
-            isProcessing = true;
-
-            try {
-                scanner.pause(true);
-            } catch (e) {
-                console.log("Gagal pause scanner:", e);
-            }
-
-            fetch('/proses_absen', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ qr_data: decodedText })
+        try:
+            # Timeout diperpanjang jadi 12 detik agar Apps Script punya cukup waktu merespons saat scan pertama
+            requests.post(
+                GOOGLE_SHEET_URL, json=payload, allow_redirects=True, timeout=12
+            )
+            return jsonify({
+                'status': 'success',
+                'message': f'✅ {nama} Berhasil Absen!',
+                'siswa': payload,
             })
-            .then(response => response.json())
-            .then(data => {
-                let textPesan = document.getElementById('pesan_hasil');
-                textPesan.innerText = data.message || "Proses selesai";
-
-                if (data.status === 'success') {
-                    let namaSiswa = data.siswa ? data.siswa.nama : '';
-                    bicara(`Berhasil Absen, Selamat Datang ${namaSiswa}`);
-                    textPesan.style.color = '#34d399';
-
-                    let listAbsen = document.getElementById('daftar_absen');
-                    let itemBaru = document.createElement('li');
-                    itemBaru.innerText = `[${data.siswa.waktu}] ${data.siswa.nama} - Kelas ${data.siswa.kelas} (${data.siswa.role})`;
-                    listAbsen.prepend(itemBaru);
-
-                } else if (data.status === 'warning') {
-                    bicara(data.message);
-                    textPesan.style.color = '#fbbf24';
-                } else if (data.status === 'ditutup') {
-                    bicara(data.message);
-                    textPesan.style.color = '#f87171';
-                } else {
-                    // Menampilkan dan membacakan error spesifik dari backend Python
-                    bicara(data.message || "Terjadi kesalahan!");
-                    textPesan.style.color = '#f87171';
-                }
-
-                setTimeout(() => {
-                    isProcessing = false;
-                    try {
-                        scanner.resume();
-                    } catch (e) {
-                        console.log("Gagal resume scanner:", e);
-                    }
-                }, 3500);
+        except Exception as e:
+            # Jika request ke Google Sheet gagal/timeout, lepas kunci RAM agar bisa dicoba lagi
+            with lock:
+                if kunci_absen_hari_ini in sudah_absen:
+                    del sudah_absen[kunci_absen_hari_ini]
+            return jsonify({
+                'status': 'error',
+                'message': '⚠️ Koneksi lambat, silakan coba scan lagi.',
             })
-            .catch(err => {
-                console.error("Error:", err);
-                let textPesan = document.getElementById('pesan_hasil');
-                textPesan.innerText = "⚠️ Gangguan Koneksi Server!";
-                textPesan.style.color = '#f87171';
-                bicara("Gangguan koneksi server!");
+    else:
+        return jsonify({'status': 'error', 'message': '⚠️ Format QR Code salah!'})
 
-                setTimeout(() => {
-                    isProcessing = false;
-                    try {
-                        scanner.resume();
-                    } catch (e) {}
-                }, 3000);
-            });
-        }
 
-        let scanner = new Html5QrcodeScanner("reader", { fps: 10, qrbox: 250 });
-        scanner.render(onScanSuccess);
-    </script>
-</body>
-</html>
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
