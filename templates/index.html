@@ -208,8 +208,6 @@
 
     <script>
         let isProcessing = false;
-        let lastScannedText = "";
-        let lastScannedTime = 0;
 
         function muatDaftarHadir() {
             fetch('/get_riwayat')
@@ -233,7 +231,7 @@
 
         function bicara(text) {
             if ('speechSynthesis' in window) {
-                window.speechSynthesis.cancel(); // 100% Menghentikan suara lama yang numpuk
+                window.speechSynthesis.cancel(); // Matikan antrean suara sebelumnya
                 let suara = new SpeechSynthesisUtterance(text);
                 suara.lang = 'id-ID';
                 suara.rate = 1.0;
@@ -242,19 +240,15 @@
         }
 
         function onScanSuccess(decodedText, decodedResult) {
-            let sekarang = Date.now();
-
-            // GEMBOK 1: Tolak mentah-mentah jika QR yang sama di-scan dalam 10 detik terakhir
-            if (decodedText === lastScannedText && (sekarang - lastScannedTime) < 10000) {
-                return;
-            }
-
-            // GEMBOK 2: Tolak kalau request sebelumnya belum selesai dikirim
             if (isProcessing) return;
-
             isProcessing = true;
-            lastScannedText = decodedText;
-            lastScannedTime = sekarang;
+
+            // 1. Langsung kunci dan pause kamera agar tidak spam scan
+            try {
+                scanner.pause(true);
+            } catch (e) {
+                console.log("Gagal pause scanner:", e);
+            }
 
             fetch('/proses_absen', {
                 method: 'POST',
@@ -275,6 +269,7 @@
                     let itemBaru = document.createElement('li');
                     itemBaru.innerText = `[${data.siswa.waktu}] ${data.siswa.nama} - Kelas ${data.siswa.kelas} (${data.siswa.role})`;
                     listAbsen.prepend(itemBaru);
+
                 } else if (data.status === 'warning') {
                     bicara(data.message);
                     textPesan.style.color = '#fbbf24';
@@ -286,19 +281,28 @@
                     textPesan.style.color = '#f8fafc';
                 }
 
+                // 2. Jeda 4 detik sebelum kamera aktif kembali untuk scan berikutnya
                 setTimeout(() => {
                     isProcessing = false;
-                }, 2000);
+                    try {
+                        scanner.resume();
+                    } catch (e) {
+                        console.log("Gagal resume scanner:", e);
+                    }
+                }, 4000);
             })
             .catch(err => {
                 console.error("Error:", err);
                 setTimeout(() => {
                     isProcessing = false;
-                }, 2000);
+                    try {
+                        scanner.resume();
+                    } catch (e) {}
+                }, 3000);
             });
         }
 
-        let scanner = new Html5QrcodeScanner("reader", { fps: 5, qrbox: 250 });
+        let scanner = new Html5QrcodeScanner("reader", { fps: 10, qrbox: 250 });
         scanner.render(onScanSuccess);
     </script>
 
