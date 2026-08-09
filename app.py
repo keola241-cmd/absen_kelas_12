@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import os
 from flask import Flask, jsonify, render_template, request
 import requests
@@ -25,12 +25,14 @@ def check_status():
 
 # ---------------------------------------
 
+# 🔗 LINK GOOGLE APPS SCRIPT
+GOOGLE_SHEET_URL = 'https://script.google.com/macros/s/AKfycbzSLboW2kX9DsD8PAMFkq4YzNesl5MnWyglaTM4UDSZpgBgJ3sjXnMsn5rAGr3Cq7MH/exec'
 
-# 🔗 TEMPEL LINK GOOGLE APPS SCRIPT KAMU DI SINI
-GOOGLE_SHEET_URL = 'https://script.google.com/macros/s/AKfycbzJgthJM8dwtFg8IiH_Z38K2tEzwpHCaIs4mZy3PzhT19G6MalGrUDsZyGTsfqZZNce/exec'
-
-
+# Memori RAM sementara untuk mencatat siswa yang sudah absen
 sudah_absen = set()
+
+# ⏰ ZONA WAKTU INDONESIA BARAT (WIB / UTC+7)
+WIB = timezone(timedelta(hours=7))
 
 
 @app.route('/')
@@ -49,7 +51,12 @@ def get_riwayat():
 
 @app.route('/proses_absen', methods=['POST'])
 def proses_absen():
-  sekarang = datetime.now()
+  # 1. Mengambil waktu real-time sesuai WIB
+  sekarang = datetime.now(WIB)
+  tanggal = sekarang.strftime('%Y-%m-%d')
+  waktu = sekarang.strftime('%H:%M')  # Format 24 jam (misal 11:25)
+
+  # 2. Batas waktu absen harian (atur sesuai kebutuhan, misal 23:59 atau 09:00)
   batas_waktu = sekarang.replace(
       hour=23, minute=59, second=59, microsecond=0
   )
@@ -57,7 +64,7 @@ def proses_absen():
   if sekarang > batas_waktu:
     return jsonify({
         'status': 'ditutup',
-        'message': f"❌ Absen ditutup! Sekarang jam {sekarang.strftime('%H:%M')}.",
+        'message': f"❌ Absen ditutup! Sekarang jam {waktu}.",
     })
 
   data = request.json.get('qr_data', '')
@@ -66,18 +73,18 @@ def proses_absen():
   if len(data_split) == 4:
     id_user, nama, kelas, role = data_split
 
-    if data in sudah_absen:
+    # 3. Kunci Absen Harian (TANGGAL + DATA QR)
+    # Memastikan siswa bisa absen lagi saat tanggal berganti esok hari
+    kunci_absen_hari_ini = f'{tanggal}|{data}'
+
+    if kunci_absen_hari_ini in sudah_absen:
       return jsonify({
           'status': 'warning',
-          'message': f'⚠️ {nama} sudah absen sebelumnya!',
+          'message': f'⚠️ {nama} sudah absen hari ini!',
       })
 
-    sudah_absen.add(data)
+    sudah_absen.add(kunci_absen_hari_ini)
 
-    tanggal = sekarang.strftime('%Y-%m-%d')
-
-    
-    waktu = sekarang.strftime('%H:%M')
     payload = {
         'id': id_user,
         'nama': nama,
@@ -88,7 +95,7 @@ def proses_absen():
     }
 
     try:
-      requests.post(GOOGLE_SHEET_URL, json=payload)
+      requests.post(GOOGLE_SHEET_URL, json=payload, allow_redirects=True)
       return jsonify({
           'status': 'success',
           'message': f'✅ {nama} Berhasil Absen!',
