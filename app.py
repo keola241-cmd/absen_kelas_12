@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import os
+import time
 from flask import Flask, jsonify, render_template, request
 import requests
 
@@ -29,6 +30,9 @@ GOOGLE_SHEET_URL = 'https://script.google.com/macros/s/AKfycbzSLboW2kX9DsD8PAMFk
 
 # ⏰ ZONA WAKTU INDONESIA BARAT (WIB / UTC+7)
 WIB = timezone(timedelta(hours=7))
+
+# RAM Cache untuk menyimpan timestamp scan terakhir (Mencegah spam scan ganda dalam hitungan detik)
+scan_terakhir = {}
 
 
 @app.route('/')
@@ -66,29 +70,45 @@ def proses_absen():
 
   if len(data_split) == 4:
     id_user, nama, kelas, role = data_split
+    kunci_absen = f'{tanggal}|{id_user}'
+    sekarang_ts = time.time()
 
-    # 🔍 CEK REAL-TIME KE GOOGLE SHEET
-    # Mengambil data langsung dari Sheet saat ini
+    # 1. ANTI-SPAM (Mencegah scan beruntun / double-click dalam jeda < 5 detik)
+    if (
+        kunci_absen in scan_terakhir
+        and (sekarang_ts - scan_terakhir[kunci_absen]) < 5
+    ):
+      return jsonify({
+          'status': 'warning',
+          'message': f'⚠️ {nama} baru saja scan! Harap tunggu sebentar.',
+      })
+
+    # Catat waktu scan terbaru di RAM
+    scan_terakhir[kunci_absen] = sekarang_ts
+
+    # 2. CEK DATA REAL-TIME DI GOOGLE SHEET
+    # Mengambil data aktual yang ADA di Sheet saat ini
+    kunci_sheet = set()
     try:
-      res_sheet = requests.get(GOOGLE_SHEET_URL, timeout=5)
-      riwayat = res_sheet.json() if res_sheet.status_code == 200 else []
+      res_sheet = requests.get(GOOGLE_SHEET_URL, timeout=3)
+      if res_sheet.status_code == 200:
+        riwayat = res_sheet.json()
+        kunci_sheet = {
+            f"{item.get('tanggal')}|{item.get('id')}"
+            for item in riwayat
+            if isinstance(item, dict)
+        }
     except Exception:
-      riwayat = []
+      pass
 
-    # Cek apakah ID siswa sudah terdaftar di Sheet PADA TANGGAL HARI INI
-    sudah_absen_di_sheet = any(
-        str(item.get('id')) == str(id_user)
-        and str(item.get('tanggal')) == tanggal
-        for item in riwayat
-        if isinstance(item, dict)
-    )
-
-    if sudah_absen_di_sheet:
+    # 3. JIKA SUDAH ADA DI GOOGLE SHEET HARI INI -> TOLAK (JATAH 1x ABSEN PER HARI)
+    if kunci_absen in kunci_sheet:
       return jsonify({
           'status': 'warning',
           'message': f'⚠️ {nama} sudah absen hari ini!',
       })
 
+    # 4. JIKA BELUM ADA (Atau jika data di Sheet sudah dihapus Admin) -> SIMPAN DATA
     payload = {
         'id': id_user,
         'nama': nama,
@@ -106,9 +126,12 @@ def proses_absen():
           'siswa': payload,
       })
     except Exception as e:
-      return jsonify(
-          {'status': 'error', 'message': f'⚠️ Gagal menyimpan ke Sheet: {str(e)}'}
-      )
+      # Jika server gagal menyimpan ke Sheet, reset pengunci spam
+      scan_terakhir.pop(kunci_absen, None)
+      return jsonify({
+          'status': 'error',
+          'message': f'⚠️ Gagal menyimpan ke Sheet: {str(e)}',
+      })
   else:
     return jsonify({'status': 'error', 'message': '⚠️ Format QR Code salah!'})
 
