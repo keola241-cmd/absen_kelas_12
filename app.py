@@ -25,14 +25,8 @@ def check_status():
 
 # ---------------------------------------
 
-# 🔗 LINK GOOGLE APPS SCRIPT
 GOOGLE_SHEET_URL = 'https://script.google.com/macros/s/AKfycbzSLboW2kX9DsD8PAMFkq4YzNesl5MnWyglaTM4UDSZpgBgJ3sjXnMsn5rAGr3Cq7MH/exec'
-
-# ⏰ ZONA WAKTU INDONESIA BARAT (WIB / UTC+7)
 WIB = timezone(timedelta(hours=7))
-
-# RAM Cache untuk menyimpan timestamp scan terakhir (Mencegah spam scan ganda dalam hitungan detik)
-scan_terakhir = {}
 
 
 @app.route('/')
@@ -45,7 +39,7 @@ def get_riwayat():
   try:
     response = requests.get(GOOGLE_SHEET_URL, timeout=5)
     return jsonify(response.json())
-  except Exception as e:
+  except Exception:
     return jsonify([])
 
 
@@ -70,45 +64,29 @@ def proses_absen():
 
   if len(data_split) == 4:
     id_user, nama, kelas, role = data_split
-    kunci_absen = f'{tanggal}|{id_user}'
-    sekarang_ts = time.time()
 
-    # 1. ANTI-SPAM (Mencegah scan beruntun / double-click dalam jeda < 5 detik)
-    if (
-        kunci_absen in scan_terakhir
-        and (sekarang_ts - scan_terakhir[kunci_absen]) < 5
-    ):
-      return jsonify({
-          'status': 'warning',
-          'message': f'⚠️ {nama} baru saja scan! Harap tunggu sebentar.',
-      })
-
-    # Catat waktu scan terbaru di RAM
-    scan_terakhir[kunci_absen] = sekarang_ts
-
-    # 2. CEK DATA REAL-TIME DI GOOGLE SHEET
-    # Mengambil data aktual yang ADA di Sheet saat ini
-    kunci_sheet = set()
+    # 1. CEK DATA REAL-TIME KE GOOGLE SHEET
     try:
-      res_sheet = requests.get(GOOGLE_SHEET_URL, timeout=3)
-      if res_sheet.status_code == 200:
-        riwayat = res_sheet.json()
-        kunci_sheet = {
-            f"{item.get('tanggal')}|{item.get('id')}"
-            for item in riwayat
-            if isinstance(item, dict)
-        }
+      res_sheet = requests.get(GOOGLE_SHEET_URL, timeout=4)
+      riwayat = res_sheet.json() if res_sheet.status_code == 200 else []
     except Exception:
-      pass
+      riwayat = []
 
-    # 3. JIKA SUDAH ADA DI GOOGLE SHEET HARI INI -> TOLAK (JATAH 1x ABSEN PER HARI)
-    if kunci_absen in kunci_sheet:
+    # Cek apakah ID sudah ada di sheet untuk TANGGAL HARI INI
+    sudah_absen = any(
+        str(item.get('id')) == str(id_user)
+        and str(item.get('tanggal')) == tanggal
+        for item in riwayat
+        if isinstance(item, dict)
+    )
+
+    if sudah_absen:
       return jsonify({
           'status': 'warning',
           'message': f'⚠️ {nama} sudah absen hari ini!',
       })
 
-    # 4. JIKA BELUM ADA (Atau jika data di Sheet sudah dihapus Admin) -> SIMPAN DATA
+    # 2. KIRIM PAYLOAD KE GOOGLE SHEET
     payload = {
         'id': id_user,
         'nama': nama,
@@ -119,19 +97,25 @@ def proses_absen():
     }
 
     try:
-      requests.post(GOOGLE_SHEET_URL, json=payload, allow_redirects=True)
+      res = requests.post(GOOGLE_SHEET_URL, json=payload, allow_redirects=True)
+      res_json = res.json() if res.status_code == 200 else {}
+
+      # Jika Apps Script mendeteksi data ganda
+      if res_json.get('result') == 'already_exists':
+        return jsonify({
+            'status': 'warning',
+            'message': f'⚠️ {nama} sudah absen hari ini!',
+        })
+
       return jsonify({
           'status': 'success',
           'message': f'✅ {nama} Berhasil Absen!',
           'siswa': payload,
       })
     except Exception as e:
-      # Jika server gagal menyimpan ke Sheet, reset pengunci spam
-      scan_terakhir.pop(kunci_absen, None)
-      return jsonify({
-          'status': 'error',
-          'message': f'⚠️ Gagal menyimpan ke Sheet: {str(e)}',
-      })
+      return jsonify(
+          {'status': 'error', 'message': f'⚠️ Gagal menyimpan ke Sheet: {str(e)}'}
+      )
   else:
     return jsonify({'status': 'error', 'message': '⚠️ Format QR Code salah!'})
 
