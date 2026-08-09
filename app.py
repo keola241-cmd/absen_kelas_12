@@ -9,7 +9,6 @@ app = Flask(__name__)
 # --- PEMERIKSA STATUS SAKELAR VERCEL ---
 @app.before_request
 def check_status():
-  # Membaca variabel secara langsung setiap ada request masuk
   if os.environ.get('WEB_ACTIVE', 'TRUE').upper() != 'TRUE':
     return (
         """
@@ -28,9 +27,6 @@ def check_status():
 # 🔗 LINK GOOGLE APPS SCRIPT
 GOOGLE_SHEET_URL = 'https://script.google.com/macros/s/AKfycbzSLboW2kX9DsD8PAMFkq4YzNesl5MnWyglaTM4UDSZpgBgJ3sjXnMsn5rAGr3Cq7MH/exec'
 
-# Memori RAM sementara untuk mencatat siswa yang sudah absen
-sudah_absen = set()
-
 # ⏰ ZONA WAKTU INDONESIA BARAT (WIB / UTC+7)
 WIB = timezone(timedelta(hours=7))
 
@@ -43,7 +39,7 @@ def home():
 @app.route('/get_riwayat', methods=['GET'])
 def get_riwayat():
   try:
-    response = requests.get(GOOGLE_SHEET_URL)
+    response = requests.get(GOOGLE_SHEET_URL, timeout=5)
     return jsonify(response.json())
   except Exception as e:
     return jsonify([])
@@ -51,12 +47,10 @@ def get_riwayat():
 
 @app.route('/proses_absen', methods=['POST'])
 def proses_absen():
-  # 1. Mengambil waktu real-time sesuai WIB
   sekarang = datetime.now(WIB)
   tanggal = sekarang.strftime('%Y-%m-%d')
-  waktu = sekarang.strftime('%H:%M')  # Format 24 jam (misal 11:25)
+  waktu = sekarang.strftime('%H:%M')
 
-  # 2. Batas waktu absen harian (atur sesuai kebutuhan, misal 23:59 atau 09:00)
   batas_waktu = sekarang.replace(
       hour=23, minute=59, second=59, microsecond=0
   )
@@ -73,17 +67,27 @@ def proses_absen():
   if len(data_split) == 4:
     id_user, nama, kelas, role = data_split
 
-    # 3. Kunci Absen Harian (TANGGAL + DATA QR)
-    # Memastikan siswa bisa absen lagi saat tanggal berganti esok hari
-    kunci_absen_hari_ini = f'{tanggal}|{data}'
+    # 🔍 CEK REAL-TIME KE GOOGLE SHEET
+    # Mengambil data langsung dari Sheet saat ini
+    try:
+      res_sheet = requests.get(GOOGLE_SHEET_URL, timeout=5)
+      riwayat = res_sheet.json() if res_sheet.status_code == 200 else []
+    except Exception:
+      riwayat = []
 
-    if kunci_absen_hari_ini in sudah_absen:
+    # Cek apakah ID siswa sudah terdaftar di Sheet PADA TANGGAL HARI INI
+    sudah_absen_di_sheet = any(
+        str(item.get('id')) == str(id_user)
+        and str(item.get('tanggal')) == tanggal
+        for item in riwayat
+        if isinstance(item, dict)
+    )
+
+    if sudah_absen_di_sheet:
       return jsonify({
           'status': 'warning',
           'message': f'⚠️ {nama} sudah absen hari ini!',
       })
-
-    sudah_absen.add(kunci_absen_hari_ini)
 
     payload = {
         'id': id_user,
