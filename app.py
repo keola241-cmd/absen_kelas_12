@@ -27,7 +27,7 @@ def check_status():
 
 
 # 🔗 TEMPEL LINK GOOGLE APPS SCRIPT KAMU DI SINI
-GOOGLE_SHEET_URL = 'https://script.google.com/macros/s/AKfycbzSLboW2kX9DsD8PAMFkq4YzNesl5MnWyglaTM4UDSZpgBgJ3sjXnMsn5rAGr3Cq7MH/exec'
+GOOGLE_SHEET_URL = 'https://script.google.com/macros/s/AKfycbzJgthJM8dwtFg8IiH_Z38K2tEzwpHCaIs4mZy3PzhT19G6MalGrUDsZyGTsfqZZNce/exec'
 
 
 sudah_absen = set()
