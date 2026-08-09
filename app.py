@@ -75,8 +75,9 @@ def proses_absen():
     sudah_absen.add(data)
 
     tanggal = sekarang.strftime('%Y-%m-%d')
-    waktu = sekarang.strftime('%H:%M:%S')
 
+    
+    waktu = sekarang.strftime('%H:%M')
     payload = {
         'id': id_user,
         'nama': nama,
