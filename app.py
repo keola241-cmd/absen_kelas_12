@@ -7,8 +7,7 @@ import requests
 
 app = Flask(__name__)
 
-
-# --- PEMERIKSA STATUS SAKELAR VERCEL ---
+# --- PEMERIKSA STATUS VERCEL / LOKAL ---
 @app.before_request
 def check_status():
     if os.environ.get('WEB_ACTIVE', 'TRUE').upper() != 'TRUE':
@@ -23,10 +22,8 @@ def check_status():
             403,
         )
 
-
-# ---------------------------------------
-
-GOOGLE_SHEET_URL = 'https://script.google.com/macros/s/AKfycbyn88ANfRmR2M5knaX88Fkd_ALbp8jE1w6giz1Vsme8tuiQ8Zm-DtYgVBqU0wWRhKsc/exec'
+# Ganti dengan URL deployment Web App Apps Script kamu yang terbaru
+GOOGLE_SHEET_URL = 'https://script.google.com/macros/s/AKfycbxMkejmApIlGoks7dCx0vxA03Ge17qZETpDXOJwCEZSCJUIAppkUIYM70iM24WTJ46sqA/exec'
 
 # Storage RAM: Key -> timestamp_terakhir_scan
 sudah_absen = {}
@@ -34,21 +31,17 @@ lock = threading.Lock()
 
 WIB = timezone(timedelta(hours=7))
 
-
 @app.route('/')
 def home():
     return render_template('index.html')
 
-
 @app.route('/get_riwayat', methods=['GET'])
 def get_riwayat():
     try:
-        # Timeout diperpanjang jadi 10 detik untuk menghindari kegagalan saat Apps Script cold start
         response = requests.get(GOOGLE_SHEET_URL, timeout=10)
         return jsonify(response.json())
     except Exception:
         return jsonify([])
-
 
 @app.route('/proses_absen', methods=['POST'])
 def proses_absen():
@@ -75,19 +68,16 @@ def proses_absen():
         waktu_sekarang = time.time()
 
         with lock:
-            # 1. JIKA SUDAH PERNAH DI-SCAN HARI INI
             if kunci_absen_hari_ini in sudah_absen:
                 waktu_scan_terakhir = sudah_absen[kunci_absen_hari_ini]
                 selisih_detik = waktu_sekarang - waktu_scan_terakhir
 
-                # A. Scan susulan dalam < 15 detik -> Tolak instan di RAM
                 if selisih_detik < 15:
                     return jsonify({
                         'status': 'warning',
                         'message': f'⚠️ {nama} sudah absen hari ini!',
                     })
 
-                # B. Jika > 15 detik -> Pastikan lagi dengan mengecek Google Sheet
                 masih_ada_di_sheet = False
                 try:
                     res = requests.get(GOOGLE_SHEET_URL, timeout=8)
@@ -109,10 +99,8 @@ def proses_absen():
                         'message': f'⚠️ {nama} sudah absen hari ini!',
                     })
                 else:
-                    # Jika dihapus manual dari Sheet -> lepas kunci
                     del sudah_absen[kunci_absen_hari_ini]
 
-            # 2. CATAT KE RAM DULU SEBAGAI KUNCI
             sudah_absen[kunci_absen_hari_ini] = waktu_sekarang
 
         payload = {
@@ -125,7 +113,6 @@ def proses_absen():
         }
 
         try:
-            # Timeout diperpanjang jadi 12 detik agar Apps Script punya cukup waktu merespons saat scan pertama
             requests.post(
                 GOOGLE_SHEET_URL, json=payload, allow_redirects=True, timeout=12
             )
@@ -135,7 +122,6 @@ def proses_absen():
                 'siswa': payload,
             })
         except Exception as e:
-            # Jika request ke Google Sheet gagal/timeout, lepas kunci RAM agar bisa dicoba lagi
             with lock:
                 if kunci_absen_hari_ini in sudah_absen:
                     del sudah_absen[kunci_absen_hari_ini]
@@ -145,7 +131,6 @@ def proses_absen():
             })
     else:
         return jsonify({'status': 'error', 'message': '⚠️ Format QR Code salah!'})
-
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
