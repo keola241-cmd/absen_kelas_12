@@ -50,7 +50,7 @@ def proses_absen():
     waktu = sekarang.strftime('%H:%M')
 
     # --- ATURAN JAM MASUK ---
-    BATAS_JAM_MASUK = "07:00" # <-- Ganti di sini kalau jam masuknya beda
+    BATAS_JAM_MASUK = "17:00" # <-- Ganti di sini kalau jam masuknya beda
     
     if waktu > BATAS_JAM_MASUK:
         status_kehadiran = "telat"
