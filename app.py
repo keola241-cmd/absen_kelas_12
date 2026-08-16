@@ -49,6 +49,15 @@ def proses_absen():
     tanggal = sekarang.strftime('%Y-%m-%d')
     waktu = sekarang.strftime('%H:%M')
 
+    # --- ATURAN JAM MASUK ---
+    BATAS_JAM_MASUK = "07:00" # <-- Ganti di sini kalau jam masuknya beda
+    
+    if waktu > BATAS_JAM_MASUK:
+        status_kehadiran = "telat"
+    else:
+        status_kehadiran = "tepat"
+    # ------------------------
+
     batas_waktu = sekarang.replace(
         hour=23, minute=59, second=59, microsecond=0
     )
@@ -110,7 +119,14 @@ def proses_absen():
             'role': role,
             'tanggal': tanggal,
             'waktu': waktu,
+            'status_kehadiran': status_kehadiran # Data telat/tepat dikirim ke sheet
         }
+
+        # Pesan pop-up di layar berdasarkan status
+        if status_kehadiran == "telat":
+            pesan_tampil = f'⚠️ {nama} Terlambat! ({waktu})'
+        else:
+            pesan_tampil = f'✅ {nama} Tepat Waktu! ({waktu})'
 
         try:
             requests.post(
@@ -118,7 +134,7 @@ def proses_absen():
             )
             return jsonify({
                 'status': 'success',
-                'message': f'✅ {nama} Berhasil Absen!',
+                'message': pesan_tampil,
                 'siswa': payload,
             })
         except Exception as e:
